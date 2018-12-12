@@ -37,9 +37,9 @@ float val(uint64_t challenge, float weights[k][n], int skip) {
         float running_sum = 0;
         for (int i=0; i < n; i++) {
             if (BIT(challenge, i))
-                running_sum += weights[j][i];
-            else
                 running_sum += -weights[j][i];
+            else
+                running_sum += weights[j][i];
         }
         running_product *= running_sum;
     }
@@ -47,14 +47,13 @@ float val(uint64_t challenge, float weights[k][n], int skip) {
 }
 
 void val_individual(uint64_t challenge, float weights[k][n], float result[k]) {
-    float running_product = 1;
     for (int j=0; j < k; j++) {
         result[j] = 0;
         for (int i=0; i < n; i++) {
             if (BIT(challenge, i))
-                result[j] += weights[j][i];
-            else
                 result[j] += -weights[j][i];
+            else
+                result[j] += weights[j][i];
         }
     }
 }
@@ -95,6 +94,41 @@ float max(float a, float b) {
     return a;
 }
 
+void eval_model(uint64_t challenges[N], float model_weights[k][n], float model_vals[N][k], float total_model_val[N]) {
+    for (int m = 0; m < N; m++) {
+        val_individual(challenges[m], model_weights, model_vals[m]);
+        total_model_val[m] = 1;
+        for (int j = 0; j < k; j++)
+            total_model_val[m] *= model_vals[m][j];
+    }
+}
+
+void gradient(uint64_t challenges[N], float responses[N], float total_model_val[N], float model_vals[N][k], float grad[k][n]) {
+    for (int j = 0; j < k; j++) {
+        float model_val_without_j[N] = {0};
+        for (int m = 0; m < N; m++)
+            model_val_without_j[m] = total_model_val[m] / model_vals[m][j];
+
+        for (int i = 0; i < n; i++) {
+            grad[j][i] = 0;
+            for (int m = 0; m < N; m++) {
+
+                float challenge_bit;
+                if (BIT(challenges[m], i))
+                    challenge_bit = -1;
+                else
+                    challenge_bit = +1;
+
+                grad[j][i] +=
+                        (1 - (1 / (1 + expf(-responses[m] * total_model_val[m]))))
+                        * responses[m]
+                        * model_val_without_j[m]
+                        * challenge_bit;
+            }
+        }
+    }
+}
+
 void learn(uint64_t challenges[N], float responses[N], float model_weights[k][n], float simulation_weights[k][n]) {
     float eta_minus = .5;
     float eta_plus = 1.2;
@@ -119,35 +153,11 @@ void learn(uint64_t challenges[N], float responses[N], float model_weights[k][n]
         }
 
     for (int rounds = 0; rounds < 200; rounds++) {
+        float model_vals[N][k] = {0};
+        float total_model_val[N] = {0};
 
-        for (int j = 0; j < k; j++) {
-            for (int i = 0; i < n; i++) {
-                grad[j][i] = 0;
-                for (int m = 0; m < N; m++) {
-
-                    float challenge_bit;
-                    if (BIT(challenges[m], i))
-                        challenge_bit = +1;
-                    else
-                        challenge_bit = -1;
-
-//                    float result[k];
-//                    val_individual(challenges[m], model_weights, result);
-//                    float model_val_without_j = 1;
-//                    for (int jj = 0; jj < k; jj++) {
-//                        if (jj == j) break;
-//                        model_val_without_j *= result[jj];
-//                    }
-//                    float model_val = result[j] * model_val_without_j;
-
-                    grad[j][i] +=
-                            (1 - (1 / (1 + expf(-responses[m] * val(challenges[m], model_weights, -1)))))
-                            * responses[m]
-                            * val(challenges[m], model_weights, j)
-                            * challenge_bit;
-                }
-            }
-        }
+        eval_model(challenges, model_weights, model_vals, total_model_val);
+        gradient(challenges, responses, total_model_val, model_vals, grad);
 
         // Resilient Backpropagation (RPROP) step computation
         for (int j = 0; j < k; j++) {
@@ -172,7 +182,9 @@ void learn(uint64_t challenges[N], float responses[N], float model_weights[k][n]
         memcpy(last_delta, delta, sizeof(last_delta));
         memcpy(last_delta_weight, delta_weight, sizeof(last_delta_weight));
 
-        printf("%f\n", accuracy(simulation_weights, model_weights));
+        //float acc = accuracy(simulation_weights, model_weights);
+        //printf("%i, %f, %f, %f\n", rounds, acc, norm(grad), norm(delta_weight));
+        //if (acc >= .99) return;
     }
 }
 
@@ -191,6 +203,6 @@ int main() {
 
     learn(challenges, responses, model_weights, simulation_weights);
 
-    printf("%f", accuracy(simulation_weights, model_weights));
+    printf("final accuracy: %f", accuracy(simulation_weights, model_weights));
     return 0;
 }
