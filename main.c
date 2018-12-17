@@ -125,26 +125,35 @@ static inline void eval_model() {
 }
 
 static inline void gradient() {
+    float two_by_one_plus_expf_minus_total_model_val[N];
+    for (int m = 0; m < N; m++)
+        two_by_one_plus_expf_minus_total_model_val[m] = 2 / (1 + expf(-total_model_val[m]));
+
     for (int j = 0; j < k; j++) {
-        float model_val_without_j[N] = {0};
-        for (int m = 0; m < N; m++)
+        float model_val_without_j[N];
+        float gradient_magnitute[N];
+        for (int m = 0; m < N; m++) {
             model_val_without_j[m] = total_model_val[m] / model_vals[m][j];
+            gradient_magnitute[m] = (two_by_one_plus_expf_minus_total_model_val[m]
+                                     - 1 - responses[m]) *
+                                    model_val_without_j[m];
+        }
 
         for (int i = 0; i < n; i++) {
+
             grad[j][i] = 0;
             for (int m = 0; m < N; m++) {
 
-                int challenge_bit;
                 if (BIT(challenges[m], i))
-                    challenge_bit = -1;
+                    grad[j][i] += gradient_magnitute[m];
                 else
-                    challenge_bit = +1;
+                    grad[j][i] -= gradient_magnitute[m];
 
-                grad[j][i] +=
-                        (1 - (1 / (1 + expf(-responses[m] * total_model_val[m]))))
-                        * responses[m]
-                        * model_val_without_j[m]
-                        * challenge_bit;
+//                grad[j][i] +=
+//                        (1 - (1 / (1 + expf(-responses[m] * total_model_val[m]))))
+//                        * responses[m]
+//                        * model_val_without_j[m]
+//                        * challenge_bit;
             }
         }
     }
