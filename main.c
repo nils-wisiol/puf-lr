@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <memory.h>
+#include <immintrin.h>
 
 #define BIT(var,pos) ((var) & (1<<(pos)))
 
@@ -200,7 +201,33 @@ void learn() {
     }
 }
 
+void dp(float *w, uint64_t mask, float *result) {
+    memset(result, 0, 512 / 8);
+
+    for (int i = 0; i < 4; i++) {
+        _mm512_mask_add_ps(*(__m512*)result, mask & 0xffff, *(__m512*)w, *(__m512*)result);
+        mask >>= 16;
+        w+=16;
+    }
+
+
+
+}
+
 int main() {
+    float addends[64];
+    for (int i = 0; i < 64; i++)
+        addends[i] = powf(3, i);
+
+    uint64_t mask = -1UL;
+
+    float *result;
+
+    dp(&addends[0], mask, &result[0]);
+
+    printf("%f\n%f\n%f\n%f\n", result[0], result[1], result[2], result[3]);
+    return 0;
+
     init_weights(simulation_weights);
     init_weights(model_weights);
 
