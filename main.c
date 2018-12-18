@@ -1,20 +1,17 @@
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <memory.h>
-#include <immintrin.h>
+#include <cblas.h>
 
-#define BIT(var,pos) ((var) & (1<<(pos)))
-
-#define k 4
+#define k 2
 #define n 64
-#define N 24000
+#define N 12000
 
 float simulation_weights[k][n] = {0};
 float model_weights[k][n] = {0};
 
-uint64_t challenges[N] = {0};
+float challenges[N][n] = {0};
 float responses[N] = {0};
 
 float total_model_val[N] = {0};
@@ -53,20 +50,24 @@ void init_weights(float weights[k][n]) {
             weights[j][i] = gaussian();
 }
 
-void init_challenges(uint64_t challenges[N], int length) {
-    unsigned char *target = (unsigned char*)challenges;
-    int total_size = sizeof(uint64_t) * length / sizeof(unsigned char);
-    for (int m = 0; m <total_size; m++)
-        *target++ = (unsigned char)rand();
+void init_challenges(float* challenges, int length) {
+    float *target = challenges;
+    int total_size = length * n;
+    for (int m = 0; m <total_size; m++) {
+        if (random() % 256 >= 128)
+            *target++ = -1;
+        else
+            *target++ = 1;
+    }
 }
 
-static float val(uint64_t challenge, float weights[k][n], int skip) {
+static float val(float challenge[n], float weights[k][n], int skip) {
     float running_product = 1;
     for (int j=0; j < k; j++) {
         if (j == skip) continue;
         float running_sum = 0;
         for (int i=0; i < n; i++) {
-            if (BIT(challenge, i))
+            if (challenge[i] < 0)
                 running_sum += -weights[j][i];
             else
                 running_sum += weights[j][i];
@@ -77,15 +78,15 @@ static float val(uint64_t challenge, float weights[k][n], int skip) {
 }
 
 static float accuracy() {
-    uint64_t challenges[N] = {0};
-    init_challenges(challenges, N);
+    float challenges[1000][n] = {0};
+    init_challenges((float*)challenges, 1000);
 
     int correct = 0;
-    for (int m = 0; m < N; m++)
+    for (int m = 0; m < 1000; m++)
         if (val(challenges[m], model_weights, -1) * val(challenges[m], simulation_weights, -1) > 0)
             correct++;
 
-    return (float)correct / N;
+    return (float)correct / 1000;
 }
 
 float norm(float grad[k][n]) {
@@ -115,13 +116,7 @@ static inline float max(float a, float b) {
 static inline void eval_model() {
     for (int m = 0; m < N; m++) {
         for (int j=0; j < k; j++) {
-            model_vals[m][j] = 0;
-            for (int i=0; i < n; i++) {
-                if (BIT(challenges[m], i))
-                    model_vals[m][j] -= model_weights[j][i];
-                else
-                    model_vals[m][j] += model_weights[j][i];
-            }
+            model_vals[m][j] = cblas_sdot(n, challenges[m], 1, model_weights[j], 1);
         }
         total_model_val[m] = 1;
         for (int j = 0; j < k; j++)
@@ -132,40 +127,31 @@ static inline void eval_model() {
 static inline void gradient() {
     float two_by_one_plus_expf_minus_total_model_val[N];
     for (int m = 0; m < N; m++)
-        two_by_one_plus_expf_minus_total_model_val[m] = 2 / (1 + expf(-total_model_val[m]));
+        two_by_one_plus_expf_minus_total_model_val[m] = 2 / (1 + expf(-total_model_val[m])) - 1 - responses[m];
 
     for (int j = 0; j < k; j++) {
         float model_val_without_j[N];
-        float gradient_magnitute[N];
+        float gradient_magnitude[N];
         for (int m = 0; m < N; m++) {
             model_val_without_j[m] = total_model_val[m] / model_vals[m][j];
-            gradient_magnitute[m] = (two_by_one_plus_expf_minus_total_model_val[m]
-                                     - 1 - responses[m]) *
+            gradient_magnitude[m] = two_by_one_plus_expf_minus_total_model_val[m] *
                                     model_val_without_j[m];
         }
 
         for (int i = 0; i < n; i++) {
-
             grad[j][i] = 0;
             for (int m = 0; m < N; m++) {
-
-                if (BIT(challenges[m], i))
-                    grad[j][i] += gradient_magnitute[m];
+                if (challenges[m][i] < 0)
+                    grad[j][i] += gradient_magnitude[m];
                 else
-                    grad[j][i] -= gradient_magnitute[m];
-
-//                grad[j][i] +=
-//                        (1 - (1 / (1 + expf(-responses[m] * total_model_val[m]))))
-//                        * responses[m]
-//                        * model_val_without_j[m]
-//                        * challenge_bit;
+                    grad[j][i] -= gradient_magnitude[m];
             }
         }
     }
 }
 
 void optimize_adam(int round) {
-    float alpha = 50, beta1 = 0.99, beta2 = 0.999;
+    float alpha = 30, beta1 = 0.9, beta2 = 0.999;
     float grad_norm = norm(grad);
 
     // ADAM optimization
@@ -177,13 +163,13 @@ void optimize_adam(int round) {
         }
 
     // debug output begin
-    int jj = 3, ii = 12;
-    printf("%f\t%f\t%f\t%f\n",
-           m[jj][ii]/u[jj][ii],
-           alpha / (1 - powf(beta1, round / 4 + 1)),
-           m[jj][ii]/u[jj][ii] * alpha / (1 - powf(beta1, round + 1)),
-           model_weights[jj][ii]
-    );
+//    int jj = 0, ii = 12;
+//    printf("%f\t%f\t%f\t%f\n",
+//           m[jj][ii]/u[jj][ii],
+//           alpha / (1 - powf(beta1, round + 1)),
+//           m[jj][ii]/u[jj][ii] * alpha / (1 - powf(beta1, round + 1)),
+//           model_weights[jj][ii]
+//    );
     // debug output end
 }
 
@@ -220,7 +206,7 @@ void learn(int optimizer) {
         }
 
     if (optimizer == 0) printf("rel.\tscale\tstep\ttotal\n");
-    for (int round = 0; round < 100; round++) {
+    for (int round = 0; round < 794; round++) {
         eval_model();
         gradient();
         if (optimizer == 0)
@@ -237,11 +223,10 @@ void learn(int optimizer) {
 
 
 int main() {
-
     init_weights(simulation_weights);
     init_weights(model_weights);
 
-    init_challenges(challenges, N);
+    init_challenges(&challenges[0][0], N);
     for (int m = 0; m < N; m++)
         responses[m] = sgn(val(challenges[m], simulation_weights, -1));
 
