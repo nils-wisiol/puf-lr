@@ -7,9 +7,9 @@
 
 #define BIT(var,pos) ((var) & (1<<(pos)))
 
-#define k 2
+#define k 4
 #define n 64
-#define N 12000
+#define N 24000
 
 float simulation_weights[k][n] = {0};
 float model_weights[k][n] = {0};
@@ -34,6 +34,10 @@ float last_delta[k][n] = {0};
 
 float delta_weight[k][n] = {0};
 float last_delta_weight[k][n] = {0};
+
+// ADAM optimization
+float m[k][n] = {0},
+        u[k][n] = {0};
 
 
 float gaussian(void)
@@ -160,7 +164,54 @@ static inline void gradient() {
     }
 }
 
-void learn() {
+void optimize_adam(int round) {
+    float alpha = 50, beta1 = 0.99, beta2 = 0.999;
+    float grad_norm = norm(grad);
+
+    // ADAM optimization
+    for (int j = 0; j < k; j++)
+        for (int i = 0; i < n; i++) {
+            m[j][i] = beta1 * m[j][i] + (1 - beta1) * grad[j][i];
+            u[j][i] = max(beta2 * u[j][i], grad_norm);
+            model_weights[j][i] += alpha / (1 - powf(beta1, round + 1)) * m[j][i] / u[j][i];
+        }
+
+    // debug output begin
+    int jj = 3, ii = 12;
+    printf("%f\t%f\t%f\t%f\n",
+           m[jj][ii]/u[jj][ii],
+           alpha / (1 - powf(beta1, round / 4 + 1)),
+           m[jj][ii]/u[jj][ii] * alpha / (1 - powf(beta1, round + 1)),
+           model_weights[jj][ii]
+    );
+    // debug output end
+}
+
+void optimize_rprop() {
+    for (int j = 0; j < k; j++) {
+        for (int i = 0; i < n; i++) {
+            float indicator = last_grad[j][i] * grad[j][i];
+            if (indicator > 0) {
+                delta[j][i] = min(last_delta[j][i] * eta_plus, delta_max);
+                delta_weight[j][i] = -sgn(grad[j][i]) * delta[j][i];
+                model_weights[j][i] -= delta_weight[j][i];
+            } else if (indicator < 0) {
+                delta[j][i] = max(last_delta[j][i] * eta_minus, delta_min);
+                model_weights[j][i] += last_delta_weight[j][i];
+                grad[j][i] = 0;
+            } else {
+                delta_weight[j][i] = -sgn(grad[j][i]) * delta[j][i];
+                model_weights[j][i] -= delta_weight[j][i];
+            }
+        }
+    }
+
+    memcpy(last_grad, grad, sizeof(last_grad)); // TODO just switch pointers?
+    memcpy(last_delta, delta, sizeof(last_delta));
+    memcpy(last_delta_weight, delta_weight, sizeof(last_delta_weight));
+}
+
+void learn(int optimizer) {
     for (int j = 0; j < k; j++)
         for (int i = 0; i < n; i++) {
             last_grad[j][i] = 1;
@@ -168,32 +219,15 @@ void learn() {
             delta[j][i] = .1;
         }
 
-    for (int rounds = 0; rounds < 794; rounds++) {
+    if (optimizer == 0) printf("rel.\tscale\tstep\ttotal\n");
+    for (int round = 0; round < 100; round++) {
         eval_model();
         gradient();
+        if (optimizer == 0)
+            optimize_adam(round);
+        else
+            optimize_rprop();
 
-        // Resilient Backpropagation (RPROP) step computation
-        for (int j = 0; j < k; j++) {
-            for (int i = 0; i < n; i++) {
-                float indicator = last_grad[j][i] * grad[j][i];
-                if (indicator > 0) {
-                    delta[j][i] = min(last_delta[j][i] * eta_plus, delta_max);
-                    delta_weight[j][i] = -sgn(grad[j][i]) * delta[j][i];
-                    model_weights[j][i] -= delta_weight[j][i];
-                } else if (indicator < 0) {
-                    delta[j][i] = max(last_delta[j][i] * eta_minus, delta_min);
-                    model_weights[j][i] += last_delta_weight[j][i];
-                    grad[j][i] = 0;
-                } else {
-                    delta_weight[j][i] = -sgn(grad[j][i]) * delta[j][i];
-                    model_weights[j][i] -= delta_weight[j][i];
-                }
-            }
-        }
-
-        memcpy(last_grad, grad, sizeof(last_grad)); // TODO just switch pointers?
-        memcpy(last_delta, delta, sizeof(last_delta));
-        memcpy(last_delta_weight, delta_weight, sizeof(last_delta_weight));
 
 //        float acc = accuracy(simulation_weights, model_weights);
 //        printf("%i, %f, %f, %f\n", rounds, acc, norm(grad), norm(delta_weight));
@@ -201,32 +235,8 @@ void learn() {
     }
 }
 
-void dp(float *w, uint64_t mask, float *result) {
-    memset(result, 0, 512 / 8);
-
-    for (int i = 0; i < 4; i++) {
-        _mm512_mask_add_ps(*(__m512*)result, mask & 0xffff, *(__m512*)w, *(__m512*)result);
-        mask >>= 16;
-        w+=16;
-    }
-
-
-
-}
 
 int main() {
-    float addends[64];
-    for (int i = 0; i < 64; i++)
-        addends[i] = powf(3, i);
-
-    uint64_t mask = -1UL;
-
-    float *result;
-
-    dp(&addends[0], mask, &result[0]);
-
-    printf("%f\n%f\n%f\n%f\n", result[0], result[1], result[2], result[3]);
-    return 0;
 
     init_weights(simulation_weights);
     init_weights(model_weights);
@@ -235,8 +245,11 @@ int main() {
     for (int m = 0; m < N; m++)
         responses[m] = sgn(val(challenges[m], simulation_weights, -1));
 
-    learn();
+    learn(0);
+    printf("ADAM accuracy: %f\n", accuracy());
+    init_weights(model_weights);
+    learn(1);
+    printf("RPROP accuracy: %f\n", accuracy());
 
-    printf("final accuracy: %f", accuracy());
     return 0;
 }
